@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3-Channel Live Plot Projector</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    body {
+      background-color: #090d16;
+      color: #f8fafc;
+      font-family: 'Inter', sans-serif;
+    }
+    .tabular-nums {
+      font-variant-numeric: tabular-nums;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- Top Connection & Simulator Bar -->
+  <header class="bg-slate-900 border-b border-slate-800 px-3 sm:px-6 py-2.5">
+    <div class="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-2.5">
+      <div class="flex items-center gap-2.5">
+        <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+        <span class="text-sm font-bold tracking-tight text-slate-100">3-Channel Plot Projector</span>
+        <span id="statusText" class="text-xs font-mono text-amber-300">SIMULATOR</span>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <label class="flex items-center gap-1.5 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-mono text-slate-300">
+          <span class="text-slate-500">HOST</span>
+          <input id="hostInput" type="text" value="127.0.0.1" class="w-28 bg-transparent text-slate-100 focus:outline-none" />
+        </label>
+
+        <label class="flex items-center gap-1.5 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-mono text-slate-300">
+          <span class="text-slate-500">PORT</span>
+          <input id="portInput" type="number" min="1" max="65535" value="40001" class="w-16 bg-transparent text-cyan-300 font-bold focus:outline-none" />
+        </label>
+
+        <button
+          id="connectBtn"
+          type="button"
+          onclick="toggleWebSocket()"
+          class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors"
+        >
+          Connect WS
+        </button>
+
+        <label class="flex items-center gap-2 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-200 cursor-pointer select-none">
+          <input id="simToggle" type="checkbox" checked onchange="onSimulatorToggle()" class="accent-amber-400 w-3.5 h-3.5 cursor-pointer" />
+          <span>Simulator</span>
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <!-- 3 Stacked Channel Plot Panels -->
+  <main id="plotsContainer" class="flex-1 max-w-[1600px] w-full mx-auto px-3 sm:px-6 py-3 grid grid-rows-3 gap-3 min-h-0">
+    <!-- Channel rows rendered by script -->
+  </main>
+
+  <script>
+    /**
+     * Minimal 3-Channel Live Plot Projector
+     * - X increments by 1 per point up to 10,000, then clears and starts at X = 1.
+     * - Incoming data is ingested immediately; canvas redraws are throttled via requestAnimationFrame.
+     */
+    const MAX_POINTS = 10000;
+    const SIM_INTERVAL_MS = 20; // Fast simulated stream to exercise rAF throttling
+
+    const channels = [
+      {
+        id: 1,
+        key: 'ch1',
+        title: 'Read Channel 1',
+        unit: 'mm',
+        color: '#22d3ee',
+        fill: 'rgba(34, 211, 238, 0.12)',
+        xCounter: 0,
+        xData: [],
+        yData: [],
+        current: null,
+        dirty: false,
+        phase: 0,
+      },
+      {
+        id: 2,
+        key: 'ch2',
+        title: 'Read Channel 2',
+        unit: 'mm',
+        color: '#34d399',
+        fill: 'rgba(52, 211, 153, 0.12)',
+        xCounter: 0,
+        xData: [],
+        yData: [],
+        current: null,
+        dirty: false,
+        phase: 1.8,
+      },
+      {
+        id: 3,
+        key: 'ch3',
+        title: 'Read Channel 3',
+        unit: 'mm',
+        color: '#fbbf24',
+        fill: 'rgba(251, 191, 36, 0.12)',
+        xCounter: 0,
+        xData: [],
+        yData: [],
+        current: null,
+        dirty: false,
+        phase: 3.6,
+      },
+    ];
+
+    let ws = null;
+    let isWsConnected = false;
+    let simTimerId = null;
+    let rafId = null;
+
+    function buildPlotRows() {
+      const container = document.getElementById('plotsContainer');
+      container.innerHTML = channels.map((ch) => `
+        <section class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col min-h-0">
+          <div class="flex items-center justify-between gap-3 mb-2">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full" style="background-color: ${ch.color}"></span>
+              <h2 class="text-sm font-bold text-slate-100">${ch.title}</h2>
+            </div>
+            <div class="flex items-center gap-4 text-xs font-mono tabular-nums">
+              <span class="text-slate-400">X: <strong id="x-lbl-${ch.id}" class="text-slate-200">0</strong> / ${MAX_POINTS}</span>
+              <span class="text-slate-400">VAL: <strong id="val-lbl-${ch.id}" class="text-base font-bold" style="color: ${ch.color}">--.--</strong> ${ch.unit}</span>
+            </div>
+          </div>
+          <div class="relative flex-1 bg-slate-950 border border-slate-800/90 rounded-lg overflow-hidden min-h-0">
+            <canvas id="canvas-ch-${ch.id}"></canvas>
+          </div>
+        </section>
+      `).join('');
+
+      resizeCanvases();
+    }
+
+    function resizeCanvases() {
+      const dpr = window.devicePixelRatio || 1;
+      channels.forEach((ch, idx) => {
+        const canvas = document.getElementById(`canvas-ch-${ch.id}`);
+        if (!canvas) return;
+        const rect = canvas.parentElement.getBoundingClientRect();
+        canvas.width = Math.max(10, Math.floor(rect.width * dpr));
+        canvas.height = Math.max(10, Math.floor(rect.height * dpr));
+        ch.dirty = true;
+        drawChannel(idx);
+      });
+    }
+
+    // Push a single sample into a channel (increments X by 1, resets to X = 1 after 10000 points)
+    function pushSample(ch, value) {
+      if (typeof value !== 'number' || Number.isNaN(value)) return;
+
+      if (ch.xCounter >= MAX_POINTS) {
+        ch.xCounter = 0;
+        ch.xData.length = 0;
+        ch.yData.length = 0;
+      }
+
+      ch.xCounter += 1;
+      ch.current = value;
+      ch.xData.push(ch.xCounter);
+      ch.yData.push(value);
+      ch.dirty = true;
+    }
+
+    // Parse incoming WebSocket message (JSON {"ch1":..., "ch2":..., "ch3":...} or CSV "v1,v2,v3")
+    function handleIncomingPayload(raw) {
+      try {
+        const text = typeof raw === 'string' ? raw.trim() : '';
+        if (!text) return;
+
+        if (text.startsWith('{')) {
+          const obj = JSON.parse(text);
+          pushSample(channels[0], Number(obj.ch1 ?? obj.channel1));
+          pushSample(channels[1], Number(obj.ch2 ?? obj.channel2));
+          pushSample(channels[2], Number(obj.ch3 ?? obj.channel3));
+        } else {
+          const parts = text.split(',').map((s) => parseFloat(s.trim()));
+          if (parts.length >= 3) {
+            pushSample(channels[0], parts[0]);
+            pushSample(channels[1], parts[1]);
+            pushSample(channels[2], parts[2]);
+          }
+        }
+      } catch (err) {
+        // Ignore malformed packet
+      }
+    }
+
+    function setStatus(mode, text) {
+      const dot = document.getElementById('statusDot');
+      const label = document.getElementById('statusText');
+      label.textContent = text;
+
+      if (mode === 'live') {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
+        label.className = 'text-xs font-mono text-emerald-300';
+      } else if (mode === 'sim') {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400';
+        label.className = 'text-xs font-mono text-amber-300';
+      } else {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-rose-400';
+        label.className = 'text-xs font-mono text-rose-300';
+      }
+    }
+
+    function startSimulator() {
+      stopSimulator();
+      setStatus('sim', 'SIMULATOR');
+      simTimerId = setInterval(() => {
+        channels.forEach((ch, i) => {
+          ch.phase += 0.08 + i * 0.03;
+          const base = 40 + i * 15;
+          const val = base + Math.sin(ch.phase) * 12 + (Math.random() - 0.5) * 1.2;
+          pushSample(ch, val);
+        });
+      }, SIM_INTERVAL_MS);
+    }
+
+    function stopSimulator() {
+      if (simTimerId !== null) {
+        clearInterval(simTimerId);
+        simTimerId = null;
+      }
+    }
+
+    function onSimulatorToggle() {
+      const enabled = document.getElementById('simToggle').checked;
+      if (enabled) {
+        disconnectWebSocket(false);
+        startSimulator();
+      } else {
+        stopSimulator();
+        if (!isWsConnected) {
+          setStatus('off', 'DISCONNECTED');
+        }
+      }
+    }
+
+    function toggleWebSocket() {
+      if (isWsConnected || ws) {
+        disconnectWebSocket(true);
+        return;
+      }
+
+      const host = document.getElementById('hostInput').value.trim() || '127.0.0.1';
+      const port = parseInt(document.getElementById('portInput').value, 10) || 40001;
+      const url = `ws://${host}:${port}`;
+
+      // Turn off simulator when connecting to live WebSocket
+      const simCheckbox = document.getElementById('simToggle');
+      if (simCheckbox.checked) {
+        simCheckbox.checked = false;
+        stopSimulator();
+      }
+
+      setStatus('off', `CONNECTING :${port}`);
+      const btn = document.getElementById('connectBtn');
+      btn.textContent = 'Disconnect';
+      btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white transition-colors';
+
+      try {
+        ws = new WebSocket(url);
+        ws.onopen = () => {
+          isWsConnected = true;
+          setStatus('live', `CONNECTED ${host}:${port}`);
+        };
+        ws.onmessage = (event) => {
+          handleIncomingPayload(event.data);
+        };
+        ws.onerror = () => {
+          setStatus('off', `WS ERROR :${port}`);
+        };
+        ws.onclose = () => {
+          isWsConnected = false;
+          ws = null;
+          btn.textContent = 'Connect WS';
+          btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors';
+          if (!document.getElementById('simToggle').checked) {
+            setStatus('off', 'DISCONNECTED');
+          }
+        };
+      } catch (err) {
+        setStatus('off', 'INVALID WS URL');
+        btn.textContent = 'Connect WS';
+        btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors';
+      }
+    }
+
+    function disconnectWebSocket(restoreSimIfChecked) {
+      if (ws) {
+        try { ws.close(); } catch (e) {}
+        ws = null;
+      }
+      isWsConnected = false;
+      const btn = document.getElementById('connectBtn');
+      btn.textContent = 'Connect WS';
+      btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-600 hover:bg-cyan-500 text-white transition-colors';
+
+      if (document.getElementById('simToggle').checked) {
+        if (restoreSimIfChecked) startSimulator();
+      } else {
+        setStatus('off', 'DISCONNECTED');
+      }
+    }
+
+    function drawChannel(idx) {
+      const ch = channels[idx];
+      const canvas = document.getElementById(`canvas-ch-${ch.id}`);
+      if (!canvas) return;
+
+      // Update numeric labels
+      document.getElementById(`x-lbl-${ch.id}`).textContent = String(ch.xCounter);
+      if (ch.current !== null) {
+        document.getElementById(`val-lbl-${ch.id}`).textContent = ch.current.toFixed(2);
+      }
+
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const w = canvas.width / dpr;
+      const h = canvas.height / dpr;
+
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
+
+      const padLeft = 48;
+      const padRight = 12;
+      const padTop = 10;
+      const padBottom = 18;
+      const plotW = Math.max(10, w - padLeft - padRight);
+      const plotH = Math.max(10, h - padTop - padBottom);
+
+      const count = ch.yData.length;
+      if (count === 0) {
+        ctx.fillStyle = '#475569';
+        ctx.font = '11px "JetBrains Mono", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('Waiting for data (X = 1..10000)...', padLeft + plotW / 2, padTop + plotH / 2);
+        ctx.restore();
+        return;
+      }
+
+      let yMin = ch.yData[0];
+      let yMax = ch.yData[0];
+      for (let i = 1; i < count; i++) {
+        const v = ch.yData[i];
+        if (v < yMin) yMin = v;
+        if (v > yMax) yMax = v;
+      }
+      const span = yMax - yMin;
+      const margin = span < 0.05 ? 1.0 : span * 0.15;
+      yMin -= margin;
+      yMax += margin;
+
+      // Horizontal grid & Y labels
+      const rows = 3;
+      ctx.font = '10px "JetBrains Mono", monospace';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      for (let r = 0; r <= rows; r++) {
+        const frac = r / rows;
+        const y = padTop + frac * plotH;
+        const labelVal = yMax - frac * (yMax - yMin);
+
+        ctx.strokeStyle = 'rgba(51, 65, 85, 0.45)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padLeft, y);
+        ctx.lineTo(padLeft + plotW, y);
+        ctx.stroke();
+
+        ctx.fillStyle = '#64748b';
+        ctx.fillText(labelVal.toFixed(1), padLeft - 6, y);
+      }
+
+      // Map X from 1 up to current X range (minimum span of 10)
+      const xStart = 1;
+      const xEnd = Math.max(10, ch.xCounter);
+      const xDenom = Math.max(1, xEnd - xStart);
+
+      const toX = (xVal) => padLeft + ((xVal - xStart) / xDenom) * plotW;
+      const toY = (yVal) => {
+        const norm = (yVal - yMin) / (yMax - yMin);
+        return padTop + plotH - Math.max(0, Math.min(1, norm)) * plotH;
+      };
+
+      // Area fill
+      ctx.beginPath();
+      ctx.moveTo(toX(ch.xData[0]), padTop + plotH);
+      for (let i = 0; i < count; i++) {
+        ctx.lineTo(toX(ch.xData[i]), toY(ch.yData[i]));
+      }
+      ctx.lineTo(toX(ch.xData[count - 1]), padTop + plotH);
+      ctx.closePath();
+      ctx.fillStyle = ch.fill;
+      ctx.fill();
+
+      // Waveform line
+      ctx.beginPath();
+      ctx.moveTo(toX(ch.xData[0]), toY(ch.yData[0]));
+      for (let i = 1; i < count; i++) {
+        ctx.lineTo(toX(ch.xData[i]), toY(ch.yData[i]));
+      }
+      ctx.strokeStyle = ch.color;
+      ctx.lineWidth = 1.75;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+
+      // X axis range labels
+      ctx.fillStyle = '#64748b';
+      ctx.font = '10px "JetBrains Mono", monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(`X=${xStart}`, padLeft, h - 6);
+      ctx.textAlign = 'right';
+      ctx.fillText(`X=${ch.xCounter}`, padLeft + plotW, h - 6);
+
+      ctx.restore();
+    }
+
+    // Throttled UI render loop synced to display refresh via requestAnimationFrame
+    function renderLoop() {
+      for (let i = 0; i < channels.length; i++) {
+        if (channels[i].dirty) {
+          channels[i].dirty = false;
+          drawChannel(i);
+        }
+      }
+      rafId = requestAnimationFrame(renderLoop);
+    }
+
+    window.addEventListener('resize', resizeCanvases);
+    window.addEventListener('DOMContentLoaded', () => {
+      buildPlotRows();
+      rafId = requestAnimationFrame(renderLoop);
+      if (document.getElementById('simToggle').checked) {
+        startSimulator();
+      }
+    });
+  </script>
+</body>
+</html>
