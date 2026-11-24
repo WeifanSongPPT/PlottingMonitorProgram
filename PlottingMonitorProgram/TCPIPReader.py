@@ -4,6 +4,7 @@ import threading
 import time 
 import random 
 import json 
+from ParameterServer import pServer
 
 class TelemetryServer:
     def __init__(self, hostname:str, port:int, server_channel_cnt = 3):
@@ -11,10 +12,21 @@ class TelemetryServer:
         self._port = port 
         self._sendingInterval = 4
         self._waitingScanningTimeout = 10 
-        self._bufferLength = 30
+        self._bufferLength = pServer.GetCommonParameters("SampleCount") 
         self._buffers = []
+        self._updateLock = threading.Lock() 
         for i in range(server_channel_cnt):
             self._buffers.append([0.0]*self._bufferLength) 
+
+    def UpdateParameters(self, newSampleCount, newSampleInterval):
+        with self._updateLock:
+            if newSampleCount is not None:
+                self._bufferLength = newSampleCount 
+                #print(f"SampleCount = {self._bufferLength}")
+            if newSampleInterval is not None: 
+                self._sendingInterval = newSampleInterval 
+                #print(f"SampleInterval = {self._sendingInterval}")
+
 
     def TelemetryDataCollection(self,channel,sample_interval = 0.1):
        _read_result = [] 
@@ -29,7 +41,12 @@ class TelemetryServer:
        return _sum / self._bufferLength 
 
 
-
+    def _packDataToSocket(self, data_title:list):
+        _packedDictionary = {} 
+        _index = 0
+        for titles in data_title:
+            _packedDictionary.update({titles: self.TelemetryDataCollection(_index)})
+            _index += 1 
        
     def RunTelemetryServer(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -56,6 +73,8 @@ class TelemetryServer:
                   payload = json.dumps(telemetrydata) + "\n" 
                   client_sock.sendall(payload.encode('utf-8'))
                   time.sleep(self._sendingInterval)
+                  self.UpdateParameters(pServer.GetCommonParameters("SampleCount"),
+                                        pServer.GetCommonParameters("SampleIntervalSecords")) 
             except ConnectionResetError as cre:
                 print(f"Connection {self._hostName}: {self._port} aborted due to Connect Reset Error")
                 client_sock.close() 

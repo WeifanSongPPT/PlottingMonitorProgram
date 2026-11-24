@@ -50,14 +50,16 @@ class DataTeachingRecords:
 
 class SocketDataAcquire:
 
-    def __init__(self, hostname:str, port:int, dataAquireCb:Callable):
+    def __init__(self, hostname:str, port:int, dataAquireCb:Callable, aquireTimeout = 10.0):
         self._hostName = hostname 
         self._port = port 
         self._cbFunction = dataAquireCb 
-        self._socketAcquireTimeout = 5.0 
+        self._socketAcquireTimeout = aquireTimeout 
         self._receievedTime = time.time() 
+        
 
     def AcquireDataEvent(self, aquireEvent:threading.Event):
+        
         while not aquireEvent.is_set():
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

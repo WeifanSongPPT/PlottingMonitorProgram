@@ -1,6 +1,8 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+from CalibrationWindow import pServer
+
 
 class SampleSettingsWindow:
     def __init__(self, root: tk.Tk):
@@ -79,7 +81,9 @@ class SampleSettingsWindow:
 
     def save_settings(self):
         try:
-            sampingCount = float(self.sample_count_entry.get()) 
+            sampingCount = int(self.sample_count_entry.get()) 
             sampingInterval = float(self.sampling_interval_entry.get()) 
+            pServer.AddCommonParameters("SampleCount", sampingCount) 
+            pServer.AddCommonParameters("SampleIntervalSecords", sampingInterval) 
         except ValueError:
             messagebox.showerror("Invalid Input", "Please enter valid numeric values for P1 and P2.") 

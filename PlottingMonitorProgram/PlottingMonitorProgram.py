@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import matplotlib
 
-from CalibrationWindow import CalibrateSettingsWindow 
+from CalibrationWindow import CalibrateSettingsWindow, pServer 
 from ChannelHistoryWindow import ChannelHistoryWindow 
 from SocketDataAcquire import ChannelDef, SocketDataAcquire
 from TCPIPReader import TelemetryServer 
@@ -37,8 +37,12 @@ class TelemetryMonitorApp:
         self.show_extreme_var = tk.BooleanVar(value=False) 
         self.connected = False
         self.socket_thread = None
-        self.stop_event = threading.Event()
-        self.data_acquire_handle = SocketDataAcquire(self.host_var.get(), int(self.port_var.get()), self.data_plotting_from_socket)  
+        self.stop_event = threading.Event() 
+        pServer.AddCommonParameters("AquireSocketTimeout", 10.0)
+        self.data_acquire_handle = SocketDataAcquire(self.host_var.get(), 
+                                                     int(self.port_var.get()), 
+                                                     self.data_plotting_from_socket, 
+                                                     aquireTimeout=pServer.GetCommonParameters("AquireSocketTimeout"))  
 
         self.acquire_chn1 = ChannelDef("R - AXIS", "mm", 80, "#06b6d4")
         self.acquire_chn2 = ChannelDef("T - AXIS", "mm", 80, "#06b6d4")
@@ -600,6 +604,8 @@ class TelemetryMonitorApp:
         self.root.destroy() 
 
 def startTelemetryServer():
+    pServer.AddCommonParameters("SampleCount", 30) 
+    pServer.AddCommonParameters("SampleIntervalSecords", 10) 
     server = TelemetryServer("127.0.0.1",40001) 
     t1 = threading.Thread(target = server.RunTelemetryServer) 
     t1.start() 
